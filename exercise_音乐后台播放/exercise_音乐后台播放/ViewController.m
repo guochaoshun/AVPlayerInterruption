@@ -15,6 +15,8 @@
 }
 
 @property(nonatomic, strong) AVPlayer *player;
+@property (weak, nonatomic) IBOutlet UILabel *infoLabel;
+@property (weak, nonatomic) IBOutlet UISwitch *switchButton;
 
 
 @end
@@ -35,22 +37,33 @@
     //后台播放显示信息设置
     [self setPlayingInfo];
 
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [_player pause];
-    });
-
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(interruptionAction:) name:AVAudioSessionInterruptionNotification object:nil];
 
+}
+- (IBAction)playAction:(id)sender {
+    if (self.player.rate == 0) {
+        [self.player play];
+        _isPlayingNow = YES;
+        NSLog(@"播放");
+    } else {
+        [self.player pause];
+        _isPlayingNow = NO;
+        NSLog(@"暂停");
+    }
+    
 }
 
 - (void)interruptionAction:(NSNotification *)noti {
     NSLog(@"-interruptionAction %@",noti);
     if ([noti.userInfo[AVAudioSessionInterruptionWasSuspendedKey] boolValue] == YES) {
         NSLog(@"因为被挂起而打断");
-        if (self.player.rate == 0) {
-            [self.player play];
-            _isPlayingNow = YES;
+        if (self.switchButton.isOn) {
+            if (self.player.rate == 0) {
+                [self.player play];
+                _isPlayingNow = YES;
+                self.infoLabel.text = @"尝试播放";
+                NSLog(@"尝试播放");
+            }
         }
     }
 
@@ -68,17 +81,11 @@
     if (event.type == UIEventTypeRemoteControl) {  //判断是否为远程控制
         switch (event.subtype) {
             case  UIEventSubtypeRemoteControlPlay:
-                if (!_isPlayingNow) {
-                    [_player play];
-                }
-                _isPlayingNow = !_isPlayingNow;
+                [self playAction:nil];
                 NSLog(@"接受到远程控制 - 播放");
                 break;
             case UIEventSubtypeRemoteControlPause:
-                if (_isPlayingNow) {
-                    [_player pause];
-                }
-                _isPlayingNow = !_isPlayingNow;
+                [self playAction:nil];
                 NSLog(@"接受到远程控制 - 暂停");
                 break;
             case UIEventSubtypeRemoteControlNextTrack:
@@ -118,3 +125,30 @@
 }
 
 @end
+
+/**
+
+ 正常的期望应该是点击一次就可以播放了, 而且也尝试了在没有挂起的情况下,确实是点击一次就可以完成播放. 那为什么挂起状态下需要点击2次呢?
+
+ 经过排查, 发现系统在第一次点击播放时,显示了此行log. 这是app被挂起时,AVPlayer发出的通知
+ AVAudioSession.mm:2285:-[AVAudioSession privateInterruptionWithInfo:]: Posting AVAudioSessionInterruptionNotification (Begin Interruption). Was suspended:1
+
+
+ 操作1: 进入app -> 开始播放 -> 暂停 -> 退后台 -> 下拉查看锁屏信息,
+ 这时候竟然会触发AVAudioSessionInterruptionNotification通知, 由于上面加的代码被执行, 播放器开始播放声音了, 但是用户并没有任何播放操作,
+
+ 操作2:进入app -> 开始播放 -> 暂停 -> 下拉查看锁屏信息 -> 退后台, ->  下拉查看锁屏信息, 点击播放(此时会受到AVAudioSessionInterruptionNotification通知), 正常播放
+
+
+
+                      iOS12                                                iOS 14
+ 操作1+挂起通知无操作        下拉无声音播放,点击可以播放          下拉无声音播放,点击可以播放
+ 操作2+挂起通知无操作        下拉无声音播放,点击可以播放          下拉无声音播放,点击可以播放
+ 操作1+挂起通知尝试播放    下拉无声音播放,点击可以播放           下拉有声音播放,异常
+ 操作2+挂起通知尝试播放     下拉无声音播放,点击可以播放          下拉无声音播放,点击可以播放
+
+
+ 猜测iOS14系统在获取锁屏上的播放器信息是懒加载的, 第一次获取播放信息的同时给app分配了一点CPU时间,然后在操作1下触发了通知,进而开始播放.
+
+ 所以所以所以, 还是不要在通知中自作聪明做什么事情了, 这个就当成系统的一个bug吧. 同时看了iOS12的设备上其他的app,也是需要点击2次才能播放的,那就这样吧.
+ */
